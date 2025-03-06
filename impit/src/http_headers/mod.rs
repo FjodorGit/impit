@@ -4,6 +4,13 @@ use std::{collections::HashMap, str::FromStr};
 
 mod statics;
 
+pub fn chrome_websocket_headers() -> HashMap<String, String> {
+    statics::CHROME_SOCKET_HEADERS
+        .iter()
+        .map(|&(k, v)| (k.to_string(), v.to_string()))
+        .collect()
+}
+
 pub struct HttpHeaders {
     context: HttpHeadersBuilder,
 }
@@ -84,7 +91,7 @@ pub struct HttpHeadersBuilder {
 
 impl HttpHeadersBuilder {
     // TODO: Enforce `with_host` to be called before `build`
-    pub fn with_host(&mut self, host: &String) -> &mut Self {
+    pub fn with_host(&mut self, host: &str) -> &mut Self {
         self.host = host.to_owned();
         self
     }

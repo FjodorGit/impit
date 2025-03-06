@@ -1,11 +1,25 @@
 use log::debug;
 use reqwest::{Method, Response, Version};
-use std::{str::FromStr, time::Duration};
+use std::{str::FromStr, sync::Arc, time::Duration};
 use thiserror::Error;
+use tokio::net::TcpStream;
+use tokio_tungstenite::{
+    connect_async_tls_with_config,
+    tungstenite::{
+        self,
+        http::{self, uri::InvalidUri},
+        Error,
+    },
+    Connector, MaybeTlsStream, WebSocketStream,
+};
 use url::Url;
 
 use crate::{
-    emulation::Browser, http3::H3Engine, http_headers::HttpHeaders, request::RequestOptions, tls,
+    emulation::Browser,
+    http3::H3Engine,
+    http_headers::{self, HttpHeaders},
+    request::RequestOptions,
+    tls,
 };
 
 /// Error types that can be returned by the [`Impit`] struct.
@@ -29,6 +43,12 @@ pub enum ErrorType {
     /// `reqwest::Error` variant. See the nested error for more details.
     #[error("`reqwest::Error` variant. See the nested error for more details: {0}")]
     RequestError(reqwest::Error),
+    #[error("`tungstenite::Error` variant. See the nested error for more details: {0}")]
+    WebsocketError(#[from] tungstenite::Error),
+    #[error("`Uri error. See the nested error for more details: {0}")]
+    UriError(#[from] InvalidUri),
+    #[error("")]
+    HttpError(#[from] http::Error),
 }
 
 /// Impit is the main struct used to make (impersonated) requests.
@@ -38,6 +58,7 @@ pub enum ErrorType {
 /// To create a new [`Impit`] instance, use the [`Impit::builder()`](ImpitBuilder) method.
 pub struct Impit {
     pub(self) base_client: reqwest::Client,
+    pub(self) socket_client: Connector,
     pub(self) h3_client: Option<reqwest::Client>,
     h3_engine: Option<H3Engine>,
     config: ImpitBuilder,
@@ -179,6 +200,21 @@ impl Impit {
         ImpitBuilder::default()
     }
 
+    fn new_websocket_client(config: &ImpitBuilder) -> Result<Connector, Error> {
+        let mut tls_config_builder = tls::TlsConfig::builder();
+        let mut tls_config_builder = tls_config_builder.with_browser(config.browser);
+
+        if config.max_http_version == Version::HTTP_3 {
+            tls_config_builder = tls_config_builder.with_http3();
+        }
+
+        tls_config_builder = tls_config_builder.with_ignore_tls_errors(config.ignore_tls_errors);
+
+        let tls_config = tls_config_builder.build();
+        let connector = Connector::Rustls(Arc::new(tls_config));
+        Ok(connector)
+    }
+
     fn new_reqwest_client(config: &ImpitBuilder) -> Result<reqwest::Client, reqwest::Error> {
         let mut client = reqwest::Client::builder();
         let mut tls_config_builder = tls::TlsConfig::builder();
@@ -225,6 +261,7 @@ impl Impit {
     /// Creates a new [`Impit`] instance based on the options stored in the [`ImpitBuilder`] instance.
     fn new(config: ImpitBuilder) -> Self {
         let mut h3_client: Option<reqwest::Client> = None;
+        let socket_client = Self::new_websocket_client(&config).unwrap();
         let mut base_client = Self::new_reqwest_client(&config).unwrap();
 
         if config.max_http_version == Version::HTTP_3 {
@@ -238,6 +275,7 @@ impl Impit {
 
         Impit {
             base_client,
+            socket_client,
             h3_client,
             config,
             h3_engine: None,
@@ -360,6 +398,78 @@ impl Impit {
         }
 
         Ok(response)
+    }
+
+    pub async fn open_socket(
+        &mut self,
+        url: String,
+        options: Option<RequestOptions>,
+    ) -> Result<
+        (
+            WebSocketStream<MaybeTlsStream<TcpStream>>,
+            tungstenite::handshake::client::Response,
+        ),
+        ErrorType,
+    > {
+        let options = options.unwrap_or_default();
+        let chrome_websocket_headers = http_headers::chrome_websocket_headers();
+
+        if options.http3_prior_knowledge && self.config.max_http_version < Version::HTTP_3 {
+            return Err(ErrorType::Http3Disabled);
+        }
+
+        let parsed_url = self
+            .parse_url(url.clone())
+            .expect("URL should be a valid URL");
+        let host = parsed_url.host_str().unwrap().to_string();
+
+        let h3 = options.http3_prior_knowledge || self.should_use_h3(&host).await;
+
+        let headers = HttpHeaders::get_builder()
+            .with_host(&host)
+            .with_https(parsed_url.scheme() == "https")
+            .with_custom_headers(&chrome_websocket_headers)
+            .build();
+
+        let client = if h3 {
+            debug!("Using QUIC for request to {}", url);
+            self.h3_client.as_ref().unwrap()
+        } else {
+            debug!("{} doesn't seem to have HTTP3 support", url);
+            &self.base_client
+        };
+
+        let mut request = client
+            .request(Method::GET, parsed_url)
+            .headers(headers.into());
+
+        if h3 {
+            request = request.version(Version::HTTP_3);
+        }
+
+        if let Some(timeout) = options.timeout {
+            request = request.timeout(timeout);
+        }
+
+        let reqwest_request = request.build().expect("Failed to build request");
+
+        let mut request_builder = http::request::Builder::new()
+            .method("GET")
+            .uri(reqwest_request.url().to_string())
+            .version(reqwest_request.version());
+
+        request_builder = reqwest_request
+            .headers()
+            .iter()
+            .fold(request_builder, |req_build, (name, value)| {
+                req_build.header(name, value)
+            });
+
+        let r = request_builder
+            .body(())
+            .expect("Failed to convert requests");
+
+        Ok(connect_async_tls_with_config(r, None, false, Some(self.socket_client.clone())).await?)
     }
 
     /// Makes a `GET` request to the specified URL.

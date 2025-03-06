@@ -17,6 +17,16 @@ pub static CHROME_HEADERS: &[(&str, &str)] = &[
     ("accept-language", "en-US,en;q=0.9"),
 ];
 
+pub static CHROME_SOCKET_HEADERS: &[(&str, &str)] = &[
+    ("user-agent", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"),
+    ("upgrade", "websocket"),
+    ("sec-websocket-version", "13"),
+    ("sec-websocket-extensions", "permessage-deflate; client_max_window_bits"),
+    ("accept-encoding", "gzip, deflate, br, zstd"),
+    ("accept-language", "en-US,en;q=0.9"),
+    ("connection", "upgrade")
+];
+
 pub static CHROME_PSEUDOHEADERS_ORDER: [&str; 6] = [
     ":method",
     ":authority",

@@ -6,7 +6,7 @@ use tokio_tungstenite::{
     connect_async_tls_with_config,
     tungstenite::{
         self,
-        http::{self, uri::InvalidUri},
+        http::{self, uri::InvalidUri, Uri},
         Error,
     },
     Connector, WebSocketStream,
@@ -417,16 +417,15 @@ impl Impit {
             return Err(ErrorType::Http3Disabled);
         }
 
-        let parsed_url = self
-            .parse_url(url.clone())
-            .expect("URL should be a valid URL");
-        let host = parsed_url.host_str().unwrap().to_string();
+        let url = Uri::from_str(&url)?;
+        let scheme = url.scheme().ok_or(ErrorType::UrlProtocolError)?;
+        let host = url.host().ok_or(ErrorType::UrlMissingHostnameError)?;
 
-        let h3 = options.http3_prior_knowledge || self.should_use_h3(&host).await;
+        let h3 = options.http3_prior_knowledge || self.should_use_h3(&host.to_string()).await;
 
         let headers = HttpHeaders::get_builder()
             .with_host(&host)
-            .with_https(parsed_url.scheme() == "https")
+            .with_https(scheme == "wss")
             .with_custom_headers(&chrome_websocket_headers)
             .build();
 
@@ -439,7 +438,7 @@ impl Impit {
         };
 
         let mut request = client
-            .request(Method::GET, parsed_url)
+            .request(Method::GET, url.to_string())
             .headers(headers.into());
 
         if h3 {

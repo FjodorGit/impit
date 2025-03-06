@@ -2,7 +2,6 @@ use log::debug;
 use reqwest::{Method, Response, Version};
 use std::{str::FromStr, sync::Arc, time::Duration};
 use thiserror::Error;
-use tokio::net::TcpStream;
 use tokio_tungstenite::{
     connect_async_tls_with_config,
     tungstenite::{
@@ -10,7 +9,7 @@ use tokio_tungstenite::{
         http::{self, uri::InvalidUri},
         Error,
     },
-    Connector, MaybeTlsStream, WebSocketStream,
+    Connector, WebSocketStream,
 };
 use url::Url;
 
@@ -406,7 +405,7 @@ impl Impit {
         options: Option<RequestOptions>,
     ) -> Result<
         (
-            WebSocketStream<MaybeTlsStream<TcpStream>>,
+            WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
             tungstenite::handshake::client::Response,
         ),
         ErrorType,
